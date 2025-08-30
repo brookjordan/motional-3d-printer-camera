@@ -1,0 +1,15 @@
+# Edit the words after the colon. Keep the labels.
+
+Wi‑Fi Name: Brook
+Wi‑Fi Password: TryMyWiFi
+Web Address Name: esp32s3
+
+# Make the LED dimmer or brighter (0..255)
+LED Brightness (0-255): 10
+
+# How fast the device changes to the next picture
+Picture Speed (seconds): 2
+
+# (Optional) How often the page refreshes without JavaScript
+Page Refresh (seconds): 5
+

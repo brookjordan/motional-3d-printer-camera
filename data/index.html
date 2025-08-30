@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>{{TITLE}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="{{REFRESH_SECONDS}}">
+<link rel="stylesheet" href="/app.css">
+
+<img id="img" src="/i/latest.jpg" alt="latest frame">
+
+<h1 id="heading" class="secrets-header">{{HEADING}}</h1>
+<p id="help" class="muted">{{HELP}}</p>
+
+<table id="t">
+  <thead>
+    <tr>
+      <th>Key</th>
+      <th>Value</th>
+    </tr>
+  </thead>
+  <tbody>{{STATUS_ROWS}}</tbody>
+</table>
+
+<script type="module" src="/js/entry.js"></script>

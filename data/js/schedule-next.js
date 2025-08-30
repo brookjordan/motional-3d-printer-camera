@@ -1,82 +1,4 @@
-const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
-
-function renderObject(obj) {
-  const table = document.createElement("table");
-  table.classList.add("sub");
-  const tbody = document.createElement("tbody");
-
-  Object.entries(obj).forEach(([key, value]) => {
-    const row = document.createElement("tr");
-    const headCell = document.createElement("th");
-    headCell.textContent = key;
-    const dataCell = document.createElement("td");
-    dataCell.innerHTML = renderValue(key, value, true);
-    row.append(headCell, dataCell);
-    tbody.append(row);
-  });
-
-  table.append(tbody);
-  return table.outerHTML;
-}
-
-function renderArrayOfObjects(arr) {
-  if (!arr.length) {
-    const muted = document.createElement("em");
-    muted.className = "muted";
-    muted.textContent = "empty";
-    return muted.outerHTML;
-  }
-
-  const cols = [...new Set(arr.flatMap((o) => Object.keys(o)))];
-  let thead = document.createElement("thead");
-  let headRow = document.createElement("tr");
-  thead.append(headRow);
-  cols.forEach((c) => {
-    let th = document.createElement("th");
-    th.textContent = c;
-    headRow.append(th);
-  });
-  let tBody = document.createElement("tbody");
-  arr.forEach((row) => {
-    const tr = document.createElement("tr");
-    cols.forEach((c) => {
-      const td = document.createElement("td");
-      td.innerHTML = renderValue(c, row[c]);
-      tr.append(td);
-    });
-    tBody.append(tr);
-  });
-  const table = document.createElement("table");
-  table.classList.add("sub");
-  table.append(thead);
-  table.append(tBody);
-
-  return table.outerHTML;
-}
-
-function renderValue(key, v) {
-  if (key === "partitions" && Array.isArray(v)) return renderArrayOfObjects(v);
-  if (key === "ota" && isObj(v)) return renderObject(v);
-  if (Array.isArray(v)) {
-    if (v.length && isObj(v[0])) return renderArrayOfObjects(v);
-    return (
-      `<table class='sub'><tbody>` +
-      v.map((x, i) => `<tr><td>${i}</td><td>${String(x)}</td></tr>`).join("") +
-      `</tbody></table>`
-    );
-  }
-  if (isObj(v)) return renderObject(v);
-  return String(v);
-}
-
-function row(k, vHtml) {
-  const big = vHtml.includes("<table");
-  return (
-    `<tr><td>${k}</td><td class="${big ? "has-table" : ""}">` +
-    vHtml +
-    `</td></tr>`
-  );
-}
+// Switch to HTML hydration: the server returns a <tbody> fragment at /status.html
 
 let failStreak = 0;
 const BASE_MS = 2000;
@@ -105,20 +27,19 @@ async function tick() {
   const hardTm = setTimeout(() => ctrl.abort("timeout"), REQ_TIMEOUT_MS);
 
   try {
-    const r = await fetch("/json", { cache: "no-store", signal: ctrl.signal });
+    const r = await fetch("/status.html", { cache: "no-store", signal: ctrl.signal });
     if (!r.ok) throw new Error("HTTP " + r.status);
 
-    const j = await r.json();
+    const html = await r.text();
 
     // If a newer tick started while we awaited, drop this result
     if (myGen !== generation) return;
 
     const tb = document.querySelector("#t tbody");
-    tb.innerHTML = "";
-    Object.keys(j).forEach((k) => {
-      const html = renderValue(k, j[k]);
-      tb.insertAdjacentHTML("beforeend", row(k, html));
-    });
+    if (tb) {
+      // Response contains a full <tbody>...</tbody> — replace the node
+      tb.outerHTML = html;
+    }
 
     failStreak = 0;
   } catch (e) {
