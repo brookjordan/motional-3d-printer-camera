@@ -19,8 +19,19 @@ void setup() {
     Serial.println("FFat mount failed");
   }
 
-  Settings settings; // defaults
-  loadSettingsFromFFat(settings);
+  Settings settings{}; // zero/empty-init; all values come from settings.txt
+  loadSettingsFromFFat(settings); // unified settings (includes enterprise creds)
+
+  Serial.println("Loaded settings:");
+  Serial.printf("  SSID: %s\n", settings.wifiName.c_str());
+  Serial.printf("  Enterprise: %s\n", settings.useEnterprise ? "yes" : "no");
+  if (settings.useEnterprise) {
+    Serial.printf("  EAP user: %s\n", settings.eapUsername.c_str());
+    Serial.printf("  Outer identity: %s\n",
+                  settings.eapOuterIdentity.length() ? settings.eapOuterIdentity.c_str() : "<empty>");
+    Serial.printf("  CA path: %s\n",
+                  settings.eapCaCertPath.length() ? settings.eapCaCertPath.c_str() : "<none>");
+  }
 
   // Routes (static files + dynamic endpoints)
   setupRoutes(srvr, settings);

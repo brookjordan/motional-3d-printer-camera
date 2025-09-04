@@ -1,8 +1,6 @@
 # Edit the words after the colon. Keep the labels.
 
-Wi‑Fi Name: Brook
-Wi‑Fi Password: TryMyWiFi
-Web Address Name: esp32s3
+Web Address Name: motional-3d-printer
 
 # Make the LED dimmer or brighter (0..255)
 LED Brightness (0-255): 10
@@ -13,3 +11,17 @@ Picture Speed (seconds): 2
 # (Optional) How often the page refreshes without JavaScript
 Page Refresh (seconds): 5
 
+
+Active Profile: office
+
+[profile: office]
+Wi-Fi Name: mojo
+Use WPA2 Enterprise: yes
+Enterprise Username: ****
+Enterprise Password: ****
+# Outer Identity (optional):
+# CA Cert Path (optional):
+
+[profile: home]
+Wi-Fi Name: ****
+Wi-Fi Password: ****

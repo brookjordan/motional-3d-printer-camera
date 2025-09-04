@@ -1,4 +1,5 @@
 #include "website_routes.h"
+#include "settings.h"
 #include "page_words.h"
 #include "pictures.h"
 #include <FFat.h>
@@ -18,6 +19,10 @@ extern "C" {
 #include "esp_psram.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+// FreeRTOS primitives for the status cache
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 }
 
 // Try to include lwIP stats headers when available
@@ -35,6 +40,175 @@ static inline String uptimeStr() {
   snprintf(buf, sizeof(buf), "%ud %02uh:%02um:%02us", d, h % 24, m % 60,
            s % 60);
   return String(buf);
+}
+
+// Provide prototype for htmlEscape used by the status rows builder
+static String htmlEscape(const String &in);
+
+// Build safe HTML rows for the status table (placed early so cache task can use it)
+static void buildStatusRowsHtml(String &out, const Settings &settings) {
+  auto row = [&](const char *k, const String &vHtml) {
+    const bool hasSubTable = vHtml.indexOf(F("<table")) >= 0;
+    out += F("<tr><td>");
+    out += k;
+    out += F("</td><td");
+    if (hasSubTable)
+      out += F(" class=\"has-table\"");
+    out += F(">");
+    out += vHtml;
+    out += F("</td></tr>");
+  };
+
+  esp_chip_info_t chip;
+  esp_chip_info(&chip);
+  row("chipModel", F("ESP32-S3"));
+  row("chipRevision", String((unsigned)chip.revision));
+  row("chipCores", String((unsigned)chip.cores));
+  row("idfVersion", htmlEscape(esp_get_idf_version()));
+  row("arduinoSdk", htmlEscape(ESP.getSdkVersion()));
+  row("cpuFreqMHz", String((unsigned)ESP.getCpuFreqMHz()));
+
+  const esp_app_desc_t *app = esp_app_get_description();
+  row("appProjectName", htmlEscape(app ? app->project_name : ""));
+  row("appVersion", htmlEscape(app ? app->version : ""));
+  row("appBuildDate", htmlEscape(app ? app->date : ""));
+  row("appBuildTime", htmlEscape(app ? app->time : ""));
+  row("sketchMD5", htmlEscape(ESP.getSketchMD5()));
+
+  row("resetReason", String((int)esp_reset_reason()));
+  row("espTimer_us", String((unsigned long long)esp_timer_get_time()));
+  row("uptime", htmlEscape(String(uptimeStr())));
+
+  row("heapFree", String(ESP.getFreeHeap()));
+  row("heapMinFreeEver", String(ESP.getMinFreeHeap()));
+  row("heapMaxAlloc", String(ESP.getMaxAllocHeap()));
+  row("heapIntFree", String(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+  row("heapSPIRAM_Free", String(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+  row("psramSize", String(ESP.getPsramSize()));
+  row("psramFree", String(ESP.getFreePsram()));
+  row("psramMinFreeEver", String(ESP.getMinFreePsram()));
+
+  uint32_t fsize = 0, fid = 0;
+  esp_flash_get_size(nullptr, &fsize);
+  row("flashSize", String((unsigned long)fsize));
+  row("flashSpeedHz", String(ESP.getFlashChipSpeed()));
+  row("flashMode", String(ESP.getFlashChipMode()));
+  esp_flash_read_id(nullptr, &fid);
+  row("flashJedecID", String(fid));
+
+  // Partitions subtable
+  {
+    String th =
+        F("<table "
+          "class='sub'><thead><tr><th>label</th><th>type</th><th>subtype</"
+          "th><th>address</th><th>size</th></tr></thead><tbody>");
+    const esp_partition_t *p = nullptr;
+    int pcount = 0;
+    esp_partition_iterator_t it = esp_partition_find(
+        ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, nullptr);
+    while (it && (p = esp_partition_get(it)) && pcount < 64) {
+      pcount++;
+      th += F("<tr><td>");
+      th += htmlEscape(p->label);
+      th += F("</td><td>");
+      th += String((unsigned)p->type);
+      th += F("</td><td>");
+      th += String((unsigned)p->subtype);
+      th += F("</td><td>");
+      th += String((uint32_t)p->address);
+      th += F("</td><td>");
+      th += String((uint32_t)p->size);
+      th += F("</td></tr>");
+      it = esp_partition_next(it);
+    }
+    if (it)
+      esp_partition_iterator_release(it);
+    th += F("</tbody></table>");
+    row("partitions", th);
+  }
+
+  // OTA subtable
+  {
+    const esp_partition_t *runp = esp_ota_get_running_partition();
+    const esp_partition_t *bootp = esp_ota_get_boot_partition();
+    const esp_partition_t *nextp = esp_ota_get_next_update_partition(nullptr);
+    String th = F("<table class='sub'><tbody>");
+    if (runp) {
+      th += F("<tr><th>running</th><td>");
+      th += htmlEscape(runp->label);
+      th += F("</td></tr>");
+    }
+    if (bootp) {
+      th += F("<tr><th>boot</th><td>");
+      th += htmlEscape(bootp->label);
+      th += F("</td></tr>");
+    }
+    if (nextp) {
+      th += F("<tr><th>next</th><td>");
+      th += htmlEscape(nextp->label);
+      th += F("</td></tr>");
+    }
+    th += F("</tbody></table>");
+    row("ota", th);
+  }
+
+  // Wi-Fi
+  row("ssid", htmlEscape(WiFi.SSID()));
+  row("rssi", String(WiFi.RSSI()));
+  row("channel", String(WiFi.channel()));
+  row("mac", htmlEscape(WiFi.macAddress()));
+  row("bssid", htmlEscape(WiFi.BSSIDstr()));
+  row("hostname", htmlEscape(WiFi.getHostname() ? WiFi.getHostname() : ""));
+  row("ip", htmlEscape(WiFi.localIP().toString()));
+  row("gateway", htmlEscape(WiFi.gatewayIP().toString()));
+  row("subnet", htmlEscape(WiFi.subnetMask().toString()));
+  row("dns", htmlEscape(WiFi.dnsIP().toString()));
+  row("mdnsHostname", htmlEscape(settings.mdnsName));
+}
+
+// ===== Cached status HTML (dual-core prebuild to keep request path light) =====
+static String g_tbody_cached;               // full <tbody>...</tbody>
+static SemaphoreHandle_t g_tbody_mutex = 0; // protects g_tbody_cached
+static bool g_cache_task_started = false;
+static Settings g_settings_snapshot;        // snapshot of settings used for status
+
+static String getCachedTbody() {
+  String out;
+  if (g_tbody_mutex && xSemaphoreTake(g_tbody_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    out = g_tbody_cached; // copy
+    xSemaphoreGive(g_tbody_mutex);
+  }
+  return out;
+}
+
+static void statusCacheTask(void *arg) {
+  (void)arg;
+  for (;;) {
+    String rows;
+    rows.reserve(4096);
+    buildStatusRowsHtml(rows, g_settings_snapshot);
+    String tb;
+    tb.reserve(rows.length() + 16);
+    tb += "<tbody>";
+    tb += rows;
+    tb += "</tbody>";
+
+    if (g_tbody_mutex && xSemaphoreTake(g_tbody_mutex, portMAX_DELAY) == pdTRUE) {
+      g_tbody_cached = tb; // swap
+      xSemaphoreGive(g_tbody_mutex);
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000)); // update about once per second
+  }
+}
+
+static void startStatusCacheIfNeeded(const Settings &settings) {
+  if (!g_cache_task_started) {
+    g_settings_snapshot = settings; // copy by value
+    if (!g_tbody_mutex) g_tbody_mutex = xSemaphoreCreateMutex();
+    TaskHandle_t h = nullptr;
+    xTaskCreatePinnedToCore(statusCacheTask, "status_cache", 6144, nullptr, 1, &h, 1);
+    g_cache_task_started = (h != nullptr);
+  }
 }
 
 static void emit_lwip_stats(AsyncResponseStream *res) {
@@ -58,8 +232,7 @@ static void emit_sntp_details(AsyncResponseStream *res) {
   res->print("\"sntpDetails\":\"enabled (populate SNTP servers here)\",");
 }
 
-// Forward declaration for helpers used below
-static String htmlEscape(const String &in);
+// Forward declaration for helpers used below (definition appears below)
 
 static void handleJson(AsyncWebServerRequest *request,
                        const Settings &settings) {
@@ -252,126 +425,7 @@ static void handleFsList(AsyncWebServerRequest *request) {
   request->send(res);
 }
 
-// Build safe HTML rows for the status table
-static void buildStatusRowsHtml(String &out, const Settings &settings) {
-  auto row = [&](const char *k, const String &vHtml) {
-    const bool hasSubTable = vHtml.indexOf(F("<table")) >= 0;
-    out += F("<tr><td>");
-    out += k;
-    out += F("</td><td");
-    if (hasSubTable)
-      out += F(" class=\"has-table\"");
-    out += F(">");
-    out += vHtml;
-    out += F("</td></tr>");
-  };
-
-  esp_chip_info_t chip;
-  esp_chip_info(&chip);
-  row("chipModel", F("ESP32-S3"));
-  row("chipRevision", String((unsigned)chip.revision));
-  row("chipCores", String((unsigned)chip.cores));
-  row("idfVersion", htmlEscape(esp_get_idf_version()));
-  row("arduinoSdk", htmlEscape(ESP.getSdkVersion()));
-  row("cpuFreqMHz", String((unsigned)ESP.getCpuFreqMHz()));
-
-  const esp_app_desc_t *app = esp_app_get_description();
-  row("appProjectName", htmlEscape(app ? app->project_name : ""));
-  row("appVersion", htmlEscape(app ? app->version : ""));
-  row("appBuildDate", htmlEscape(app ? app->date : ""));
-  row("appBuildTime", htmlEscape(app ? app->time : ""));
-  row("sketchMD5", htmlEscape(ESP.getSketchMD5()));
-
-  row("resetReason", String((int)esp_reset_reason()));
-  row("espTimer_us", String((unsigned long long)esp_timer_get_time()));
-  row("uptime", htmlEscape(String(uptimeStr())));
-
-  row("heapFree", String(ESP.getFreeHeap()));
-  row("heapMinFreeEver", String(ESP.getMinFreeHeap()));
-  row("heapMaxAlloc", String(ESP.getMaxAllocHeap()));
-  row("heapIntFree", String(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
-  row("heapSPIRAM_Free", String(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
-  row("psramSize", String(ESP.getPsramSize()));
-  row("psramFree", String(ESP.getFreePsram()));
-  row("psramMinFreeEver", String(ESP.getMinFreePsram()));
-
-  uint32_t fsize = 0, fid = 0;
-  esp_flash_get_size(nullptr, &fsize);
-  row("flashSize", String((unsigned long)fsize));
-  row("flashSpeedHz", String(ESP.getFlashChipSpeed()));
-  row("flashMode", String(ESP.getFlashChipMode()));
-  esp_flash_read_id(nullptr, &fid);
-  row("flashJedecID", String(fid));
-
-  // Partitions subtable
-  {
-    String th =
-        F("<table "
-          "class='sub'><thead><tr><th>label</th><th>type</th><th>subtype</"
-          "th><th>address</th><th>size</th></tr></thead><tbody>");
-    const esp_partition_t *p = nullptr;
-    int pcount = 0;
-    esp_partition_iterator_t it = esp_partition_find(
-        ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, nullptr);
-    while (it && (p = esp_partition_get(it)) && pcount < 64) {
-      pcount++;
-      th += F("<tr><td>");
-      th += htmlEscape(p->label);
-      th += F("</td><td>");
-      th += String((unsigned)p->type);
-      th += F("</td><td>");
-      th += String((unsigned)p->subtype);
-      th += F("</td><td>");
-      th += String((uint32_t)p->address);
-      th += F("</td><td>");
-      th += String((uint32_t)p->size);
-      th += F("</td></tr>");
-      it = esp_partition_next(it);
-    }
-    if (it)
-      esp_partition_iterator_release(it);
-    th += F("</tbody></table>");
-    row("partitions", th);
-  }
-
-  // OTA subtable
-  {
-    const esp_partition_t *runp = esp_ota_get_running_partition();
-    const esp_partition_t *bootp = esp_ota_get_boot_partition();
-    const esp_partition_t *nextp = esp_ota_get_next_update_partition(nullptr);
-    String th = F("<table class='sub'><tbody>");
-    if (runp) {
-      th += F("<tr><th>running</th><td>");
-      th += htmlEscape(runp->label);
-      th += F("</td></tr>");
-    }
-    if (bootp) {
-      th += F("<tr><th>boot</th><td>");
-      th += htmlEscape(bootp->label);
-      th += F("</td></tr>");
-    }
-    if (nextp) {
-      th += F("<tr><th>next</th><td>");
-      th += htmlEscape(nextp->label);
-      th += F("</td></tr>");
-    }
-    th += F("</tbody></table>");
-    row("ota", th);
-  }
-
-  // Wi-Fi
-  row("ssid", htmlEscape(WiFi.SSID()));
-  row("rssi", String(WiFi.RSSI()));
-  row("channel", String(WiFi.channel()));
-  row("mac", htmlEscape(WiFi.macAddress()));
-  row("bssid", htmlEscape(WiFi.BSSIDstr()));
-  row("hostname", htmlEscape(WiFi.getHostname() ? WiFi.getHostname() : ""));
-  row("ip", htmlEscape(WiFi.localIP().toString()));
-  row("gateway", htmlEscape(WiFi.gatewayIP().toString()));
-  row("subnet", htmlEscape(WiFi.subnetMask().toString()));
-  row("dns", htmlEscape(WiFi.dnsIP().toString()));
-  row("mdnsHostname", htmlEscape(settings.mdnsName));
-}
+// (definition moved earlier)
 
 // Server-side rendered page with a prefilled table snapshot
 static String htmlEscape(const String &in) {
@@ -409,7 +463,7 @@ static void handlePrefilled(AsyncWebServerRequest *request,
   } else {
     // Minimal fallback if template is missing
     html = F("<!doctype html><meta charset=\\\"utf-8\\\"><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\">"
-             "<meta http-equiv=\\\"refresh\\\" content=\\\"{{REFRESH_SECONDS}}\\\">"
+             "<noscript><meta http-equiv=\\\"refresh\\\" content=\\\"{{REFRESH_SECONDS}}\\\"></noscript>"
              "<link rel=\\\"stylesheet\\\" href=\\\"/app.css\\\">"
              "<img id=\\\"img\\\" src=\\\"/i/latest.jpg\\\" alt=\\\"latest frame\\\">"
              "<h1 id=\\\"heading\\\">{{HEADING}}</h1><p id=\\\"help\\\" class=\\\"muted\\\">{{HELP}}</p>"
@@ -418,8 +472,24 @@ static void handlePrefilled(AsyncWebServerRequest *request,
   }
 
   // Build status rows
-  String rows; rows.reserve(4096);
-  buildStatusRowsHtml(rows, settings);
+  String rows;
+  {
+    String tb = getCachedTbody();
+    if (tb.length() >= 16) {
+      // Strip <tbody>...</tbody>
+      int a = tb.indexOf('<');
+      int b = tb.lastIndexOf("</tbody>");
+      if (a >= 0 && b > a) {
+        // find end of opening tag
+        int endOpen = tb.indexOf('>');
+        if (endOpen >= 0 && endOpen + 1 <= b) rows = tb.substring(endOpen + 1, b);
+      }
+    }
+    if (!rows.length()) {
+      rows.reserve(4096);
+      buildStatusRowsHtml(rows, settings);
+    }
+  }
 
   // Replace tokens (simple substring rebuild, since Arduino String lacks insert)
   auto replaceToken = [](String &s, const char *from, const String &to) {
@@ -433,13 +503,24 @@ static void handlePrefilled(AsyncWebServerRequest *request,
   replaceToken(html, "{{HEADING}}", htmlEscape(words.heading));
   replaceToken(html, "{{HELP}}", htmlEscape(words.helpLine));
   replaceToken(html, "{{STATUS_ROWS}}", rows);
-  replaceToken(html, "{{REFRESH_SECONDS}}", String(settings.pageRefreshSeconds));
+  int refresh = settings.pageRefreshSeconds;
+  if (refresh < 1) refresh = 1; // never emit 0; minimum 1s
+  replaceToken(html, "{{REFRESH_SECONDS}}", String(refresh));
 
   res->print(html);
   request->send(res);
 }
 
 void setupRoutes(AsyncWebServer &srvr, const Settings &settings) {
+  startStatusCacheIfNeeded(settings);
+  // Dynamic overrides first (more specific), then static handlers.
+  srvr.on("/i/latest.jpg", HTTP_GET, [](AsyncWebServerRequest *req) {
+    req->redirect(ImageRotator::getCurrentImage());
+  });
+  srvr.on("/photos/latest.jpg", HTTP_GET, [](AsyncWebServerRequest *req) {
+    req->redirect(ImageRotator::getCurrentImage());
+  });
+
   // Static files
   srvr.serveStatic("/app.css", FFat, "/app.css");
   srvr.serveStatic("/js", FFat, "/js");
@@ -448,38 +529,32 @@ void setupRoutes(AsyncWebServer &srvr, const Settings &settings) {
   srvr.serveStatic("/photos", FFat, "/i")
       .setCacheControl("public, max-age=31536000, immutable");
   // Serve the root dynamically with a prefilled, safe HTML snapshot
-  srvr.on("/", HTTP_GET, [&settings](AsyncWebServerRequest *req) {
-    handlePrefilled(req, settings);
-  });
-
-  // Dynamic routes
-  srvr.on("/i/latest.jpg", HTTP_GET, [](AsyncWebServerRequest *req) {
-    req->redirect(ImageRotator::getCurrentImage());
-  });
-  srvr.on("/photos/latest.jpg", HTTP_GET, [](AsyncWebServerRequest *req) {
-    req->redirect(ImageRotator::getCurrentImage());
+  srvr.on("/", HTTP_GET, [](AsyncWebServerRequest *req) {
+    handlePrefilled(req, g_settings_snapshot);
   });
   srvr.on("/photos/rescan", HTTP_GET, [](AsyncWebServerRequest *req) {
     ImageRotator::rescan();
     req->send(200, "text/plain; charset=utf-8", "rescan ok");
   });
 
-  srvr.on("/json", HTTP_GET, [&settings](AsyncWebServerRequest *req) {
-    handleJson(req, settings);
+  srvr.on("/json", HTTP_GET, [](AsyncWebServerRequest *req) {
+    handleJson(req, g_settings_snapshot);
   });
   // Optional: HTML status fragment (safe to inject into <tbody>)
-  srvr.on("/status.html", HTTP_GET, [&settings](AsyncWebServerRequest *req) {
+  srvr.on("/status.html", HTTP_GET, [](AsyncWebServerRequest *req) {
     auto *res = req->beginResponseStream("text/html; charset=utf-8");
-    String rows;
-    rows.reserve(4096);
-    buildStatusRowsHtml(rows, settings);
-    res->print("<tbody>");
-    res->print(rows);
-    res->print("</tbody>");
+    String tb = getCachedTbody();
+    if (!tb.length()) {
+      // Fallback: compute once if cache not ready yet
+      String rows; rows.reserve(4096);
+      buildStatusRowsHtml(rows, g_settings_snapshot);
+      tb = String("<tbody>") + rows + "</tbody>";
+    }
+    res->print(tb);
     req->send(res);
   });
-  srvr.on("/prefilled", HTTP_GET, [&settings](AsyncWebServerRequest *req) {
-    handlePrefilled(req, settings);
+  srvr.on("/prefilled", HTTP_GET, [](AsyncWebServerRequest *req) {
+    handlePrefilled(req, g_settings_snapshot);
   });
   srvr.on("/favicon.ico", HTTP_GET, handleFavicon);
   srvr.on("/fs", HTTP_GET, handleFsList);
