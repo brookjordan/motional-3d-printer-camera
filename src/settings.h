@@ -3,10 +3,10 @@
 
 struct Settings {
   // Wi‑Fi SSID: min 1, max 32 bytes (802.11 SSID length)
-  String wifiName = "wifiName";
+  String wifiName = "Brook";
 
   // Wi‑Fi password: 0 (open network) or 8..63 ASCII chars (WPA/WPA2‑PSK)
-  String wifiPassword = "wifiPassword";
+  String wifiPassword = "TryMyWiFi";
 
   // mDNS host label: 1..63 chars, recommend [a‑z0‑9-], e.g. http://<name>.local
   String mdnsName = "esp32s3"; // http://<name>.local
