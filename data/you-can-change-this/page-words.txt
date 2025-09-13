@@ -1,5 +1,0 @@
-# Edit the words after the colon. Keep the labels.
-
-Page Title: 3D Printer Camera
-Big Heading: ESP32 Camera
-Help Line: Auto-refreshing device info. Becomes live when JavaScript loads.

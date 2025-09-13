@@ -1,4 +1,5 @@
 #include "wifi_and_name.h"
+#include "config.h"
 #include <FFat.h>
 #include <WiFi.h>
 #ifdef ESP32
@@ -21,7 +22,7 @@ static String readFileToString(const char *path) {
 }
 
 #ifdef ESP32
-static bool connectWPA2Enterprise(const Settings &s) {
+static bool connectWPA2Enterprise() {
   // Prepare STA cleanly; avoid noisy log if STA hasn't begun yet.
   WiFi.mode(WIFI_STA);
   wl_status_t pre = WiFi.status();
@@ -33,26 +34,18 @@ static bool connectWPA2Enterprise(const Settings &s) {
   // esp_log_level_set("wifi", ESP_LOG_INFO);
   // esp_log_level_set("eap", ESP_LOG_DEBUG);
 
-  const char *ssid = s.wifiName.c_str();
-  const char *user = s.eapUsername.c_str();
-  const char *pass = s.eapPassword.c_str();
-  const char *ident =
-      (s.eapOuterIdentity.length() ? s.eapOuterIdentity.c_str() : user);
+  const char *ssid = WIFI_SSID;
+  const char *user = EAP_USERNAME;
+  const char *pass = EAP_PASSWORD;
+  const char *identCandidate = EAP_OUTER_IDENTITY;
+  const char *ident = (identCandidate && *identCandidate) ? identCandidate : user;
 
   // Configure EAP identity/credentials (IDF 5 / Arduino-ESP32 3.x)
   esp_eap_client_set_identity((const uint8_t *)ident, strlen(ident));
   esp_eap_client_set_username((const uint8_t *)user, strlen(user));
   esp_eap_client_set_password((const uint8_t *)pass, strlen(pass));
 
-  // Optional: server CA certificate for RADIUS validation
-  static String ca_pem; // keep alive while enabled
-  if (s.eapCaCertPath.length()) {
-    ca_pem = readFileToString(s.eapCaCertPath.c_str());
-    if (ca_pem.length()) {
-      esp_eap_client_set_ca_cert((const uint8_t *)ca_pem.c_str(),
-                                 ca_pem.length());
-    }
-  }
+  // CA certificate support removed for simplicity
 
   if (esp_wifi_sta_enterprise_enable() != ESP_OK) {
     Serial.println("Enterprise enable failed");
@@ -99,39 +92,37 @@ static bool connectWPA2Enterprise(const Settings &s) {
   bool ok = WiFi.status() == WL_CONNECTED;
   if (!ok) {
     Serial.printf(
-        "WPA2-Enterprise connect failed. SSID='%s' user='%s' outer='%s' "
-        "ca='%s'\n",
-        ssid, user, ident ? ident : "",
-        (s.eapCaCertPath.length() ? s.eapCaCertPath.c_str() : "<none>"));
+        "WPA2-Enterprise connect failed. SSID='%s' user='%s' outer='%s'\n",
+        ssid, user, ident ? ident : "");
     Serial.println("Tips: verify username/password, try setting an Outer "
-                   "Identity (e.g. 'anonymous'), "
-                   "or provide the RADIUS CA as PEM via 'CA Cert Path'. "
+                   "Identity (e.g. 'anonymous'). "
                    "WPA/EAP debug logs above can help.");
   }
   return ok;
 }
 #endif
 
-void connectWiFi(const Settings &settings) {
+void connectWiFi() {
   bool ok = false;
   const int kMaxAttempts = 3;
   for (int attempt = 1; attempt <= kMaxAttempts && !ok; ++attempt) {
+    const char *ssid = WIFI_SSID ? WIFI_SSID : "";
+    const char *user = EAP_USERNAME ? EAP_USERNAME : "";
     Serial.printf(
         "Wi-Fi attempt %d/%d: SSID='%s', useEnterprise=%s, user='%s'\n",
-        attempt, kMaxAttempts, settings.wifiName.c_str(),
-        settings.useEnterprise ? "yes" : "no", settings.eapUsername.c_str());
+        attempt, kMaxAttempts, ssid, USE_ENTERPRISE_WIFI ? "yes" : "no",
+        user);
 #ifdef ESP32
-    bool enterpriseEligible = settings.useEnterprise &&
-                              settings.eapUsername.length() &&
-                              settings.wifiName.length();
-    if (!enterpriseEligible && settings.useEnterprise) {
+    bool enterpriseEligible = USE_ENTERPRISE_WIFI && strlen(EAP_USERNAME) > 0 &&
+                              strlen(WIFI_SSID) > 0;
+    if (!enterpriseEligible && USE_ENTERPRISE_WIFI) {
       Serial.print("Enterprise requested but not eligible: missing ");
       bool first = true;
-      if (!settings.eapUsername.length()) {
+      if (strlen(EAP_USERNAME) == 0) {
         Serial.print("username");
         first = false;
       }
-      if (!settings.wifiName.length()) {
+      if (strlen(WIFI_SSID) == 0) {
         Serial.print(first ? "ssid" : "+ ssid");
         first = false;
       }
@@ -139,7 +130,7 @@ void connectWiFi(const Settings &settings) {
     }
     if (enterpriseEligible) {
       Serial.println("Trying WPA2-Enterprise...");
-      ok = connectWPA2Enterprise(settings);
+      ok = connectWPA2Enterprise();
     }
 #endif
     if (!ok) {
@@ -147,7 +138,7 @@ void connectWiFi(const Settings &settings) {
       // esp_log_level_set("wpa", ESP_LOG_DEBUG);
       // esp_log_level_set("eap", ESP_LOG_DEBUG);
 
-      WiFi.begin(settings.wifiName.c_str(), settings.wifiPassword.c_str());
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
       Serial.println("Falling back to WPA2-PSK/open");
       Serial.print("Connecting");
       uint32_t t0 = millis();
@@ -194,9 +185,9 @@ void connectWiFi(const Settings &settings) {
     esp_log_level_set("wpa", ESP_LOG_WARN);
     esp_log_level_set("eap", ESP_LOG_WARN);
 #ifdef ESP32
-    if (MDNS.begin(settings.mdnsName.c_str())) {
+    if (MDNS.begin(MDNS_HOSTNAME)) {
       MDNS.addService("http", "tcp", 80);
-      Serial.printf("mDNS: http://%s.local\n", settings.mdnsName.c_str());
+      Serial.printf("mDNS: http://%s.local\n", MDNS_HOSTNAME);
     }
 #endif
   } else {

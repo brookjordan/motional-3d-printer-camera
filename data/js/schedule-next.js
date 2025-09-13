@@ -1,14 +1,33 @@
-// Switch to HTML hydration: the server returns a <tbody> fragment at /status.html
+// @ts-check
+/**
+ * @fileoverview Handles periodic status table updates with exponential backoff and visibility awareness
+ */
 
+/** @type {number} Current consecutive failure count */
 let failStreak = 0;
+
+/** @type {number} Base interval between updates in milliseconds */
 const BASE_MS = 2000;
+
+/** @type {number} Maximum interval between updates in milliseconds */
 const MAX_MS = 15000;
+
+/** @type {number} Request timeout in milliseconds */
 const REQ_TIMEOUT_MS = MAX_MS;
 
-let generation = 0; // increments per tick
-let inFlightCtrl = null; // AbortController for the current request
-let nextTimer = null; // the only allowed pending timer
+/** @type {number} Generation counter to prevent race conditions */
+let generation = 0;
 
+/** @type {AbortController | null} Controller for the current in-flight request */
+let inFlightCtrl = null;
+
+/** @type {number | null} Timer ID for the next scheduled update */
+let nextTimer = null;
+
+/**
+ * Performs a single status update tick with error handling and race condition prevention
+ * @returns {Promise<void>}
+ */
 async function tick() {
   const myGen = ++generation;
 
@@ -27,7 +46,10 @@ async function tick() {
   const hardTm = setTimeout(() => ctrl.abort("timeout"), REQ_TIMEOUT_MS);
 
   try {
-    const r = await fetch("/status.html", { cache: "no-store", signal: ctrl.signal });
+    const r = await fetch("/status.html", {
+      cache: "no-store",
+      signal: ctrl.signal,
+    });
     if (!r.ok) throw new Error("HTTP " + r.status);
 
     const html = await r.text();
@@ -35,7 +57,7 @@ async function tick() {
     // If a newer tick started while we awaited, drop this result
     if (myGen !== generation) return;
 
-    const tb = document.querySelector("#t tbody");
+    const tb = document.querySelector("#diagnostics-table tbody");
     if (tb) {
       // Response contains a full <tbody>...</tbody> — replace the node
       tb.outerHTML = html;
@@ -83,9 +105,14 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-export function scheduleNext(ms) {
+/**
+ * Schedules the next status update after the specified delay
+ * @param {number} milliseconds - Delay in milliseconds before the next update
+ * @returns {void}
+ */
+export function scheduleNext(milliseconds) {
   if (nextTimer) {
     clearTimeout(nextTimer);
   }
-  nextTimer = setTimeout(tick, ms);
+  nextTimer = setTimeout(tick, milliseconds);
 }

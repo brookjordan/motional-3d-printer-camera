@@ -1,7 +1,6 @@
 #include "website_routes.h"
-#include "settings.h"
-#include "page_words.h"
-#include "pictures.h"
+#include "camera_cycle.h"
+#include "config.h"
 #include <FFat.h>
 #include <WiFi.h>
 #include <string.h>
@@ -18,6 +17,7 @@ extern "C" {
 #include "esp_partition.h"
 #include "esp_psram.h"
 #include "esp_system.h"
+#include "esp_task_wdt.h"
 #include "esp_timer.h"
 // FreeRTOS primitives for the status cache
 #include "freertos/FreeRTOS.h"
@@ -45,8 +45,7 @@ static inline String uptimeStr() {
 // Provide prototype for htmlEscape used by the status rows builder
 static String htmlEscape(const String &in);
 
-// Build safe HTML rows for the status table (placed early so cache task can use it)
-static void buildStatusRowsHtml(String &out, const Settings &settings) {
+static void buildStatusRowsHtml(String &out) {
   auto row = [&](const char *k, const String &vHtml) {
     const bool hasSubTable = vHtml.indexOf(F("<table")) >= 0;
     out += F("<tr><td>");
@@ -163,53 +162,21 @@ static void buildStatusRowsHtml(String &out, const Settings &settings) {
   row("gateway", htmlEscape(WiFi.gatewayIP().toString()));
   row("subnet", htmlEscape(WiFi.subnetMask().toString()));
   row("dns", htmlEscape(WiFi.dnsIP().toString()));
-  row("mdnsHostname", htmlEscape(settings.mdnsName));
-}
+  row("mdnsHostname", htmlEscape(MDNS_HOSTNAME));
 
-// ===== Cached status HTML (dual-core prebuild to keep request path light) =====
-static String g_tbody_cached;               // full <tbody>...</tbody>
-static SemaphoreHandle_t g_tbody_mutex = 0; // protects g_tbody_cached
-static bool g_cache_task_started = false;
-static Settings g_settings_snapshot;        // snapshot of settings used for status
-
-static String getCachedTbody() {
-  String out;
-  if (g_tbody_mutex && xSemaphoreTake(g_tbody_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-    out = g_tbody_cached; // copy
-    xSemaphoreGive(g_tbody_mutex);
-  }
-  return out;
-}
-
-static void statusCacheTask(void *arg) {
-  (void)arg;
-  for (;;) {
-    String rows;
-    rows.reserve(4096);
-    buildStatusRowsHtml(rows, g_settings_snapshot);
-    String tb;
-    tb.reserve(rows.length() + 16);
-    tb += "<tbody>";
-    tb += rows;
-    tb += "</tbody>";
-
-    if (g_tbody_mutex && xSemaphoreTake(g_tbody_mutex, portMAX_DELAY) == pdTRUE) {
-      g_tbody_cached = tb; // swap
-      xSemaphoreGive(g_tbody_mutex);
-    }
-    vTaskDelay(pdMS_TO_TICKS(1000)); // update about once per second
+  // FFat filesystem details
+  if (FFat.begin()) {
+    row("ffatMounted", F("true"));
+    row("ffatTotalBytes", String((unsigned long long)FFat.totalBytes()));
+    row("ffatUsedBytes", String((unsigned long long)FFat.usedBytes()));
+    row("ffatFreeBytes",
+        String((unsigned long long)(FFat.totalBytes() - FFat.usedBytes())));
+  } else {
+    row("ffatMounted", F("false"));
   }
 }
 
-static void startStatusCacheIfNeeded(const Settings &settings) {
-  if (!g_cache_task_started) {
-    g_settings_snapshot = settings; // copy by value
-    if (!g_tbody_mutex) g_tbody_mutex = xSemaphoreCreateMutex();
-    TaskHandle_t h = nullptr;
-    xTaskCreatePinnedToCore(statusCacheTask, "status_cache", 6144, nullptr, 1, &h, 1);
-    g_cache_task_started = (h != nullptr);
-  }
-}
+// Settings are now compile-time constants from config.h
 
 static void emit_lwip_stats(AsyncResponseStream *res) {
 #if defined(LWIP_STATS) && LWIP_STATS
@@ -234,8 +201,7 @@ static void emit_sntp_details(AsyncResponseStream *res) {
 
 // Forward declaration for helpers used below (definition appears below)
 
-static void handleJson(AsyncWebServerRequest *request,
-                       const Settings &settings) {
+static void handleJson(AsyncWebServerRequest *request) {
   AsyncResponseStream *res = request->beginResponseStream("application/json");
   res->addHeader("Cache-Control", "no-cache");
 
@@ -368,7 +334,17 @@ static void handleJson(AsyncWebServerRequest *request,
   kvsS("subnet", WiFi.subnetMask().toString());
   kvsS("dns", WiFi.dnsIP().toString());
 
-  kvs("mdnsHostname", settings.mdnsName.c_str());
+  kvs("mdnsHostname", MDNS_HOSTNAME);
+
+  // FFat filesystem details
+  if (FFat.begin()) {
+    kvs("ffatMounted", "true");
+    kv("ffatTotalBytes", (uint64_t)FFat.totalBytes());
+    kv("ffatUsedBytes", (uint64_t)FFat.usedBytes());
+    kv("ffatFreeBytes", (uint64_t)(FFat.totalBytes() - FFat.usedBytes()));
+  } else {
+    kvs("ffatMounted", "false");
+  }
 
   emit_lwip_stats(res);
   emit_freertos_stats(res);
@@ -447,9 +423,20 @@ static String htmlEscape(const String &in) {
   return out;
 }
 
-static void handlePrefilled(AsyncWebServerRequest *request,
-                            const Settings &settings) {
-  PageWords words; loadPageWords(words);
+// Return a full <tbody>...</tbody> snapshot for client hydration
+static void handleStatusTbody(AsyncWebServerRequest *request) {
+  auto *res = request->beginResponseStream("text/html; charset=utf-8");
+  res->addHeader("Cache-Control", "no-cache");
+  String rows;
+  rows.reserve(4096);
+  buildStatusRowsHtml(rows);
+  res->print(F("<tbody>"));
+  res->print(rows);
+  res->print(F("</tbody>"));
+  request->send(res);
+}
+
+static void handlePrefilled(AsyncWebServerRequest *request) {
   auto *res = request->beginResponseStream("text/html; charset=utf-8");
   res->addHeader("Cache-Control", "no-cache");
 
@@ -457,68 +444,75 @@ static void handlePrefilled(AsyncWebServerRequest *request,
   String html;
   File f = FFat.open("/index.html", "r");
   if (f) {
+    Serial.printf("Loading template from FFat, size: %d bytes\n", f.size());
     html.reserve((size_t)f.size() + 4096);
-    while (f.available()) html += (char)f.read();
+    while (f.available())
+      html += (char)f.read();
     f.close();
+    Serial.println("Template loaded successfully from FFat");
   } else {
+    Serial.println("Template not found in FFat, using fallback");
     // Minimal fallback if template is missing
-    html = F("<!doctype html><meta charset=\\\"utf-8\\\"><meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1\\\">"
-             "<noscript><meta http-equiv=\\\"refresh\\\" content=\\\"{{REFRESH_SECONDS}}\\\"></noscript>"
-             "<link rel=\\\"stylesheet\\\" href=\\\"/app.css\\\">"
-             "<img id=\\\"img\\\" src=\\\"/i/latest.jpg\\\" alt=\\\"latest frame\\\">"
-             "<h1 id=\\\"heading\\\">{{HEADING}}</h1><p id=\\\"help\\\" class=\\\"muted\\\">{{HELP}}</p>"
-             "<table id=\\\"t\\\"><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>{{STATUS_ROWS}}</tbody></table>"
-             "<script type=\\\"module\\\" src=\\\"/js/entry.js\\\"></script>");
+    html = F("<!doctype html><meta charset=\"utf-8\"><meta "
+             "name=\"viewport\" content=\"width=device-width, "
+             "initial-scale=1\">"
+             "<noscript><meta http-equiv=\"refresh\" "
+             "content=\"{{REFRESH_SECONDS}}\"></noscript>"
+             "<link rel=\"stylesheet\" href=\"/app.css\">"
+             "<img id=\"img\" src=\"/i/latest.jpg\" alt=\"latest "
+             "frame\">"
+             "<h1 id=\"heading\">{{HEADING}}</h1><p id=\"help\" "
+             "class=\"muted\">{{HELP}}</p>"
+             "<table "
+             "id=\"t\"><thead><tr><th>Key</th><th>Value</th></tr></"
+             "thead><tbody>{{STATUS_ROWS}}</tbody></table>"
+             "<script type=\"module\" src=\"/js/entry.js\"></script>");
   }
 
-  // Build status rows
+  // Build status rows directly
   String rows;
-  {
-    String tb = getCachedTbody();
-    if (tb.length() >= 16) {
-      // Strip <tbody>...</tbody>
-      int a = tb.indexOf('<');
-      int b = tb.lastIndexOf("</tbody>");
-      if (a >= 0 && b > a) {
-        // find end of opening tag
-        int endOpen = tb.indexOf('>');
-        if (endOpen >= 0 && endOpen + 1 <= b) rows = tb.substring(endOpen + 1, b);
-      }
-    }
-    if (!rows.length()) {
-      rows.reserve(4096);
-      buildStatusRowsHtml(rows, settings);
-    }
-  }
+  rows.reserve(4096);
+  buildStatusRowsHtml(rows);
 
-  // Replace tokens (simple substring rebuild, since Arduino String lacks insert)
+  // Replace tokens (simple substring rebuild, since Arduino String lacks
+  // insert)
   auto replaceToken = [](String &s, const char *from, const String &to) {
-    int pos = 0; size_t flen = strlen(from);
+    int pos = 0;
+    size_t flen = strlen(from);
     while ((pos = s.indexOf(from, pos)) != -1) {
       s = s.substring(0, pos) + to + s.substring(pos + (int)flen);
       pos += to.length();
     }
   };
-  replaceToken(html, "{{TITLE}}", htmlEscape(words.pageTitle));
-  replaceToken(html, "{{HEADING}}", htmlEscape(words.heading));
-  replaceToken(html, "{{HELP}}", htmlEscape(words.helpLine));
+  replaceToken(html, "{{TITLE}}", "ESP32-S3 Camera");
+  replaceToken(html, "{{HEADING}}", "ESP32-S3 Camera");
+  replaceToken(html, "{{HELP}}", "ESP diagnostics at time of load.");
   replaceToken(html, "{{STATUS_ROWS}}", rows);
-  int refresh = settings.pageRefreshSeconds;
-  if (refresh < 1) refresh = 1; // never emit 0; minimum 1s
+  int refresh = PAGE_REFRESH_SECONDS;
+  if (refresh < 1)
+    refresh = 1; // never emit 0; minimum 1s
   replaceToken(html, "{{REFRESH_SECONDS}}", String(refresh));
 
   res->print(html);
   request->send(res);
 }
 
-void setupRoutes(AsyncWebServer &srvr, const Settings &settings) {
-  startStatusCacheIfNeeded(settings);
+void setupRoutes(AsyncWebServer &srvr) {
   // Dynamic overrides first (more specific), then static handlers.
+  // Stream the current image directly to avoid redirect races that can
+  // manifest as partially rendered (e.g., "top half only") images on clients.
   srvr.on("/i/latest.jpg", HTTP_GET, [](AsyncWebServerRequest *req) {
-    req->redirect(ImageRotator::getCurrentImage());
+    String latestPath = Camera::getCurrentImage();
+    if (FFat.exists(latestPath)) {
+      req->redirect(latestPath);
+      // Ensure browsers don’t cache this endpoint across updates
+
+    } else {
+      req->send(404, "text/plain", "Camera not available");
+    }
   });
   srvr.on("/photos/latest.jpg", HTTP_GET, [](AsyncWebServerRequest *req) {
-    req->redirect(ImageRotator::getCurrentImage());
+    req->redirect(Camera::getCurrentImage());
   });
 
   // Static files
@@ -529,33 +523,15 @@ void setupRoutes(AsyncWebServer &srvr, const Settings &settings) {
   srvr.serveStatic("/photos", FFat, "/i")
       .setCacheControl("public, max-age=31536000, immutable");
   // Serve the root dynamically with a prefilled, safe HTML snapshot
-  srvr.on("/", HTTP_GET, [](AsyncWebServerRequest *req) {
-    handlePrefilled(req, g_settings_snapshot);
-  });
-  srvr.on("/photos/rescan", HTTP_GET, [](AsyncWebServerRequest *req) {
-    ImageRotator::rescan();
-    req->send(200, "text/plain; charset=utf-8", "rescan ok");
-  });
-
-  srvr.on("/json", HTTP_GET, [](AsyncWebServerRequest *req) {
-    handleJson(req, g_settings_snapshot);
-  });
-  // Optional: HTML status fragment (safe to inject into <tbody>)
-  srvr.on("/status.html", HTTP_GET, [](AsyncWebServerRequest *req) {
-    auto *res = req->beginResponseStream("text/html; charset=utf-8");
-    String tb = getCachedTbody();
-    if (!tb.length()) {
-      // Fallback: compute once if cache not ready yet
-      String rows; rows.reserve(4096);
-      buildStatusRowsHtml(rows, g_settings_snapshot);
-      tb = String("<tbody>") + rows + "</tbody>";
-    }
-    res->print(tb);
-    req->send(res);
-  });
-  srvr.on("/prefilled", HTTP_GET, [](AsyncWebServerRequest *req) {
-    handlePrefilled(req, g_settings_snapshot);
-  });
+  srvr.on("/", HTTP_GET,
+          [](AsyncWebServerRequest *req) { handlePrefilled(req); });
+  // Hydration endpoint for JS client (returns full <tbody>...)
+  srvr.on("/status.html", HTTP_GET,
+          [](AsyncWebServerRequest *req) { handleStatusTbody(req); });
+  srvr.on("/json", HTTP_GET,
+          [](AsyncWebServerRequest *req) { handleJson(req); });
+  srvr.on("/prefilled", HTTP_GET,
+          [](AsyncWebServerRequest *req) { handlePrefilled(req); });
   srvr.on("/favicon.ico", HTTP_GET, handleFavicon);
   srvr.on("/fs", HTTP_GET, handleFsList);
 }
