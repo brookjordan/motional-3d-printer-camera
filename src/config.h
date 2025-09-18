@@ -10,9 +10,9 @@
 // Change this to switch between profiles at compile time (can be overridden in
 // config.local.h)
 #ifndef ACTIVE_PROFILE
-#define ACTIVE_PROFILE HOME_PROFILE
-#endif
 // Available profiles: HOME_PROFILE, OFFICE_PROFILE
+#define ACTIVE_PROFILE OFFICE_PROFILE
+#endif
 
 // ===== PROFILE DEFINITIONS =====
 struct NetworkConfig {
@@ -108,7 +108,8 @@ static constexpr Config CONFIG = ACTIVE_PROFILE;
 // ===== COMPILE-TIME SAFETY CHECK =====
 // Force use of config.local.h for credentials
 #if !__has_include("config.local.h")
-#error "ERROR: Copy src/config.local.example.h to src/config.local.h and add your real WiFi credentials!"
+#error                                                                         \
+    "ERROR: Copy src/config.local.example.h to src/config.local.h and add your real WiFi credentials!"
 #endif
 
 // ===== CONVENIENCE MACROS FOR BACKWARD COMPATIBILITY =====

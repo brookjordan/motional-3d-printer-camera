@@ -10,3 +10,6 @@ src/config.local.h
 
 # Captured images on device (if ever mirrored locally)
 data/i/*.jpg
+
+# NPM
+node_modules
