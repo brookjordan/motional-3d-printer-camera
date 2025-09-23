@@ -1,34 +1,27 @@
-// @ts-check
 /**
  * @fileoverview Handles periodic status table updates with exponential backoff and visibility awareness
  */
 
-/** @type {number} Current consecutive failure count */
-let failStreak = 0;
+import { addMessage, removeMessage, addInfo } from "./error-messages.js";
 
-/** @type {number} Base interval between updates in milliseconds */
-const BASE_MS = 2000;
+const DATA_ERROR = Symbol("data-error");
+const DATA_INFO = Symbol("data-info");
 
-/** @type {number} Maximum interval between updates in milliseconds */
-const MAX_MS = 15000;
+let dataErrorShowing: boolean = false;
+let failStreak: number = 0;
 
-/** @type {number} Request timeout in milliseconds */
-const REQ_TIMEOUT_MS = MAX_MS;
+const BASE_MS: number = 15000;
+const MAX_MS: number = 60000;
+const REQ_TIMEOUT_MS: number = MAX_MS;
 
-/** @type {number} Generation counter to prevent race conditions */
-let generation = 0;
-
-/** @type {AbortController | null} Controller for the current in-flight request */
-let inFlightCtrl = null;
-
-/** @type {number | null} Timer ID for the next scheduled update */
-let nextTimer = null;
+let generation: number = 0;
+let inFlightCtrl: AbortController | null = null;
+let nextTimer: number | null = null;
 
 /**
  * Performs a single status update tick with error handling and race condition prevention
- * @returns {Promise<void>}
  */
-async function tick() {
+async function tick(): Promise<void> {
   const myGen = ++generation;
 
   // Cancel any older in-flight request
@@ -44,6 +37,9 @@ async function tick() {
 
   // Hard timeout for this request
   const hardTm = setTimeout(() => ctrl.abort("timeout"), REQ_TIMEOUT_MS);
+
+  // Show info message when data fetch starts
+  addInfo(DATA_INFO, "Last data");
 
   try {
     const r = await fetch("/status.html", {
@@ -63,12 +59,21 @@ async function tick() {
       tb.outerHTML = html;
     }
 
+    removeMessage(DATA_ERROR);
+    dataErrorShowing = false;
+
     failStreak = 0;
   } catch (e) {
     // Ignore aborts from supersession/visibility changes
-    if (e?.name !== "AbortError") {
+    if ((e as Error)?.name !== "AbortError") {
       console.warn("poll error:", e);
       failStreak++;
+
+      // Only show error message if not already showing
+      if (!dataErrorShowing) {
+        addMessage(DATA_ERROR, "Data is no longer live");
+        dataErrorShowing = true;
+      }
     }
   } finally {
     clearTimeout(hardTm);
@@ -107,10 +112,8 @@ document.addEventListener("visibilitychange", () => {
 
 /**
  * Schedules the next status update after the specified delay
- * @param {number} milliseconds - Delay in milliseconds before the next update
- * @returns {void}
  */
-export function scheduleNext(milliseconds) {
+export function scheduleNext(milliseconds: number): void {
   if (nextTimer) {
     clearTimeout(nextTimer);
   }

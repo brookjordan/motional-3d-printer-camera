@@ -7,7 +7,12 @@
 </noscript>
 <link rel="stylesheet" href="/app.css">
 
-<img id="img" src="/i/latest.jpg" alt="latest frame">
+<div id="info-messages" style="color: blue; margin-bottom: 10px;"></div>
+<div id="img-container" class="img-container">
+  <canvas id="img-canvas" class="img-canvas"></canvas>
+  <img id="img-loading" class="img-loading" src="/i/latest.jpg" alt="latest frame">
+</div>
+<div id="error-messages" style="color: red; margin-top: 10px;"></div>
 
 <h1 id="heading" class="secrets-header">{{HEADING}}</h1>
 <p id="help" class="muted">{{HELP}}</p>
@@ -22,5 +27,5 @@
   <tbody>{{STATUS_ROWS}}</tbody>
 </table>
 
-<script type="module" src="/js/entry.js"></script>
-<script nomodule src="/js/bundle.js"></script>
+<script type="module" src="/js/entry.js" async></script>
+<script nomodule src="/js/bundle.js" async></script>

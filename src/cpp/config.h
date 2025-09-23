@@ -49,13 +49,12 @@ struct CameraConfig {
 
   // Resolution options:
   // FRAMESIZE_QVGA  - 320x240   (76K pixels)
-  // FRAMESIZE_CIF   - 400x296   (118K pixels)
+  // FRAMESIZE_CIF   - 400x296   (118K pixels) ← Current (minimal strain)
   // FRAMESIZE_VGA   - 640x480   (307K pixels)
-  // FRAMESIZE_SVGA  - 800x600   (480K pixels) ← Current (with 8MB PSRAM)
-  // FRAMESIZE_VGA   - 640x480   (307K pixels)
+  // FRAMESIZE_SVGA  - 800x600   (480K pixels)
   // FRAMESIZE_XGA   - 1024x768  (786K pixels)
   // FRAMESIZE_SXGA  - 1280x1024 (1.3M pixels)
-  framesize_t frameSize = FRAMESIZE_SVGA;
+  framesize_t frameSize = FRAMESIZE_CIF;
 
   // JPEG Quality: 0-63 (lower = better quality, larger files)
   // 10 = high quality, 20 = good balance, 40 = smaller files

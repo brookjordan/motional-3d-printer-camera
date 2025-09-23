@@ -502,9 +502,22 @@ void setupRoutes(AsyncWebServer &srvr) {
   // Stream the current image directly to avoid redirect races that can
   // manifest as partially rendered (e.g., "top half only") images on clients.
   srvr.on("/i/latest.jpg", HTTP_GET, [](AsyncWebServerRequest *req) {
-    String latestPath = Camera::getCurrentImage();
-    if (FFat.exists(latestPath)) {
-      req->redirect(latestPath);
+    uint8_t *imageBuffer;
+    size_t imageSize;
+    
+    if (Camera::getCachedImage(&imageBuffer, &imageSize)) {
+      AsyncWebServerResponse *response = req->beginResponse("image/jpeg", imageSize, 
+        [imageBuffer, imageSize](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+          size_t remaining = imageSize - index;
+          size_t toSend = (remaining < maxLen) ? remaining : maxLen;
+          if (toSend > 0) {
+            memcpy(buffer, imageBuffer + index, toSend);
+          }
+          return toSend;
+        });
+      response->addHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      response->addHeader("Content-Length", String(imageSize));
+      req->send(response);
       // Ensure browsers don’t cache this endpoint across updates
 
     } else {
@@ -517,7 +530,7 @@ void setupRoutes(AsyncWebServer &srvr) {
 
   // Static files
   srvr.serveStatic("/app.css", FFat, "/app.css");
-  srvr.serveStatic("/js", FFat, "/js");
+  srvr.serveStatic("/js/", FFat, "/js/");
   srvr.serveStatic("/i", FFat, "/i")
       .setCacheControl("public, max-age=31536000, immutable");
   srvr.serveStatic("/photos", FFat, "/i")

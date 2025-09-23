@@ -28,8 +28,7 @@ static void cameraTask(void* parameter) {
   
   // Continuous operation on Core 0
   for (;;) {
-    CameraCycle::loop();  // Camera capture every 3 seconds
-    LEDBreathe::loop();   // LED breathing animation
+    CameraCycle::loop();  // Camera capture every 13 seconds (includes LED breathe)
     
     // Health check every 30 seconds
     uint32_t now = millis();
@@ -53,15 +52,14 @@ void Core0Manager::setup() {
   
   Serial.println("Testing camera and LED system...");
   
-  // Create camera task pinned to Core 0
-  xTaskCreatePinnedToCore(
+  // Create camera task using default scheduler
+  xTaskCreate(
     cameraTask,              // Task function
-    "camera_core0",         // Task name
+    "camera_task",          // Task name
     CAMERA_TASK_STACK_SIZE,  // Stack size
     nullptr,                 // Parameters
     CAMERA_TASK_PRIORITY,    // Priority
-    &cameraTaskHandle,       // Task handle
-    CAMERA_TASK_CORE         // Pin to Core
+    &cameraTaskHandle        // Task handle
   );
   
   Serial.println("Camera task created on Core 0");

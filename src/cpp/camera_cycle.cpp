@@ -12,6 +12,11 @@ static uint32_t lastCaptureTime = 0;
 static String imageHistory[MAX_STORED_IMAGES];
 static int imageIndex = 0;
 
+// ===== IN-MEMORY IMAGE CACHE =====
+static uint8_t *cachedImageBuffer = nullptr;
+static size_t cachedImageSize = 0;
+static SemaphoreHandle_t imageCacheMutex = nullptr;
+
 // ===== FILESYSTEM FUNCTIONS =====
 static bool initFilesystem() {
   if (!FFat.begin()) {
@@ -109,6 +114,9 @@ static void sequentialCaptureAndProcess() {
   size_t imageSize = fb->len;
   esp_camera_fb_return(fb);  // Release camera buffer immediately
   
+  // Yield after memory operations
+  vTaskDelay(pdMS_TO_TICKS(10));
+  
   // Step 3: Generate filename
   uint32_t timestamp = millis();
   String imagePath = String(IMAGE_PATH_PREFIX) + String(timestamp) + String(IMAGE_PATH_SUFFIX);
@@ -123,8 +131,25 @@ static void sequentialCaptureAndProcess() {
     file.close();
     writeSuccess = (bytesWritten == imageSize);
     
+    // Yield after file operations
+    vTaskDelay(pdMS_TO_TICKS(10));
+    
     if (writeSuccess) {
       latestImagePath = imagePath;
+      
+      // Update in-memory cache for web serving immediately
+      if (xSemaphoreTake(imageCacheMutex, pdMS_TO_TICKS(100))) {
+        if (cachedImageBuffer) {
+          free(cachedImageBuffer);
+        }
+        cachedImageBuffer = (uint8_t*)malloc(imageSize);
+        if (cachedImageBuffer) {
+          memcpy(cachedImageBuffer, psramBuffer, imageSize);
+          cachedImageSize = imageSize;
+        }
+        xSemaphoreGive(imageCacheMutex);
+      }
+      
       Serial.printf("Core 0: Photo saved %s (%d bytes)\n", imagePath.c_str(), imageSize);
     } else {
       Serial.printf("Core 0: Write failed %d/%d bytes\n", bytesWritten, imageSize);
@@ -165,12 +190,15 @@ static void sequentialCaptureAndProcess() {
   Serial.println("Core 0: LED breathe...");
   LEDBreathe::breatheOnce();
   
-  Serial.println("Core 0: Cycle complete");
+  Serial.println("Core 0: Cycle complete - waiting 10 seconds before next capture");
 }
 
 namespace CameraCycle {
 
 void setup() {
+  // Initialize image cache mutex
+  imageCacheMutex = xSemaphoreCreateMutex();
+  
   // Initialize filesystem with retry
   if (!initFilesystem()) {
     Serial.println("Filesystem initialization failed!");
@@ -206,14 +234,14 @@ void setup() {
 void loop() {
   uint32_t now = millis();
 
-  // Sequential capture cycle every 3 seconds
-  if (now - lastCaptureTime >= 3000) {
+  // Sequential capture cycle every 13 seconds (3s cycle + 10s wait)
+  if (now - lastCaptureTime >= 13000) {
     sequentialCaptureAndProcess();
     lastCaptureTime = now;
   }
   
-  // Small yield to prevent watchdog
-  vTaskDelay(10);
+  // Yield frequently to allow scheduler to handle other tasks
+  vTaskDelay(pdMS_TO_TICKS(100));
 }
 
 } // namespace CameraCycle
@@ -221,6 +249,19 @@ void loop() {
 // Compatibility functions for existing code
 namespace Camera {
 String getCurrentImage() { return latestImagePath; }
+
+// Get cached image data for direct serving (thread-safe)
+bool getCachedImage(uint8_t **buffer, size_t *size) {
+  if (!imageCacheMutex || !cachedImageBuffer) return false;
+  
+  if (xSemaphoreTake(imageCacheMutex, pdMS_TO_TICKS(10))) {
+    *buffer = cachedImageBuffer;
+    *size = cachedImageSize;
+    xSemaphoreGive(imageCacheMutex);
+    return true;
+  }
+  return false;
+}
 } // namespace Camera
 
 namespace ImageRotator = Camera;

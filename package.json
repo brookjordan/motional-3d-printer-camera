@@ -3,7 +3,18 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build:js": "rollup -c",
+    "build:ts": "tsc",
+    "build:fs": "pio run -t uploadfs",
+    "build:cpp": "pio run -t upload",
+    "monitor": "pio device monitor",
+    "clean:js": "rm -f data/js/bundle.js",
+    "clean:cpp": "pio run -t clean",
+    "clean": "npm run clean:js && npm run clean:cpp",
+    "dev": "npm run build:js && npm run build:cpp && npm run build:fs",
+    "build": "npm run build:ts && npm run build:js && npm run build:cpp && npm run build:fs",
+    "clean-build": "npm run clean && npm run build"
   },
   "repository": {
     "type": "git",
@@ -16,7 +27,9 @@
   },
   "homepage": "https://github.com/brookjordan/motional-3d-printer-camera#readme",
   "description": "",
-  "dependencies": {
-    "rollup": "^4.50.2"
+  "devDependencies": {
+    "rollup": "^4.50.2",
+    "tslib": "^2.8.1",
+    "typescript": "^5.9.2"
   }
 }

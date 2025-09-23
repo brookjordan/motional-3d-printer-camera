@@ -11,4 +11,4 @@ import { rotateImg } from "./rotate-image.js";
 // Initialize the web interface
 updateText();
 scheduleNext(0);
-rotateImg();
+rotateImg(); // Start image rotation (has built-in delay)

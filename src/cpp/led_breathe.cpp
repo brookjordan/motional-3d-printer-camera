@@ -71,18 +71,18 @@ void loop() {
 void breatheOnce() {
   pickNewColor();
   
-  // Breathe up over 1.5 seconds
-  for (int i = 0; i <= 150; i++) {
-    float intensity = (float)i / 150.0f;
+  // Breathe up over 1.5 seconds with 5 changes per second
+  for (int i = 0; i <= 7; i++) {
+    float intensity = (float)i / 7.0f;
     updateLED(intensity);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(200)); // 200ms = 5 changes per second
   }
   
-  // Breathe down over 1.5 seconds
-  for (int i = 150; i >= 0; i--) {
-    float intensity = (float)i / 150.0f;
+  // Breathe down over 1.5 seconds with 5 changes per second
+  for (int i = 7; i >= 0; i--) {
+    float intensity = (float)i / 7.0f;
     updateLED(intensity);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(200)); // 200ms = 5 changes per second
   }
 }
 
