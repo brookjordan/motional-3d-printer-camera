@@ -8,6 +8,7 @@
 #include "website_routes.h"
 #include "light_breathing.h"
 #include "pictures.h"
+#include "camera_capture.h"
 
 AsyncWebServer srvr(80);
 
@@ -33,6 +34,10 @@ void setup() {
   ImageRotator::setIntervalMs((unsigned long)settings.pictureSpeedSeconds * 1000UL);
   LedBreath::setup();
   ImageRotator::setup();
+  // Start camera capture service (optional if no camera wired)
+  if (!CameraCapture::setup()) {
+    Serial.println("Camera not started (init failed). Running with test images.");
+  }
 
   srvr.begin();
   Serial.println("HTTP server started");
@@ -42,4 +47,5 @@ void setup() {
 void loop() {
   LedBreath::loop();
   ImageRotator::tick();
+  CameraCapture::tick();
 }
