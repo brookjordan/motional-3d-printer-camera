@@ -23,6 +23,7 @@ static size_t idx = 0;
 static String currentImage = "/i/8e6a765e87869b07a9dcef1385e37368.jpg";
 static unsigned long lastUpdate = 0;
 static unsigned long interval = 2000; // ms
+static const char *camPrefix = "cam_"; // camera-captured file prefix
 
 static bool hasJpegExt(const char *name) {
   const char *p = name; if (!p) return false;
@@ -74,6 +75,31 @@ void tick() {
 }
 
 String getCurrentImage() { return currentImage; }
+
+// Helper: extract monotonic cam_ index or -1
+static int32_t camIndexFromName(const String &path) {
+  int slash = path.lastIndexOf('/');
+  if (slash < 0) return -1;
+  String base = path.substring(slash + 1); // e.g. cam_000123.jpg
+  if (!base.startsWith(camPrefix) || !base.endsWith(".jpg")) return -1;
+  String num = base.substring(strlen(camPrefix), base.length() - 4);
+  for (size_t i = 0; i < num.length(); ++i) if (!isDigit(num[i])) return -1;
+  return num.toInt();
+}
+
+String getLatestImage() {
+  File root = FFat.open("/i");
+  if (!root || !root.isDirectory()) return String();
+  int32_t bestIdx = -1; String bestPath;
+  for (File f = root.openNextFile(); f; f = root.openNextFile()) {
+    if (f.isDirectory()) { f.close(); continue; }
+    String p = String(f.name());
+    int32_t idx = camIndexFromName(p);
+    if (idx >= 0 && idx > bestIdx) { bestIdx = idx; bestPath = p; }
+    f.close();
+  }
+  return bestPath; // empty if none found
+}
 
 void setIntervalMs(unsigned long ms) {
   if (ms < 250) ms = 250; // safety

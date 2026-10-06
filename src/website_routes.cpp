@@ -454,10 +454,14 @@ void setupRoutes(AsyncWebServer &srvr, const Settings &settings) {
 
   // Dynamic routes
   srvr.on("/i/latest.jpg", HTTP_GET, [](AsyncWebServerRequest *req) {
-    req->redirect(ImageRotator::getCurrentImage());
+    String latest = ImageRotator::getLatestImage();
+    if (latest.length() == 0) latest = ImageRotator::getCurrentImage();
+    req->redirect(latest);
   });
   srvr.on("/photos/latest.jpg", HTTP_GET, [](AsyncWebServerRequest *req) {
-    req->redirect(ImageRotator::getCurrentImage());
+    String latest = ImageRotator::getLatestImage();
+    if (latest.length() == 0) latest = ImageRotator::getCurrentImage();
+    req->redirect(latest);
   });
   srvr.on("/photos/rescan", HTTP_GET, [](AsyncWebServerRequest *req) {
     ImageRotator::rescan();
